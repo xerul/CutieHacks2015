@@ -1,0 +1,270 @@
+#include "mbed.h"
+
+//0.348718 right, 0.531624 left (potentiometer zero position) 
+//0.536752 left,  0.385104 right
+//max left forward 0.75, max right forward 0.12
+//min left backward 0.114286 min right backwards 0.716728 
+//Right side, pot forward is decreasing. 
+//Left side, pot forward is increasing.
+//dir = 1 is down for the back
+
+
+#define ZERO_RIGHT 0.385104
+#define ZERO_LEFT  0.536752
+#define WAIT_MOVEMENT_TIME 0.03
+#define ERROR_THRESHOLD 0.005
+#define MAX_FORWARD_R 0.13
+#define MAX_FORWARD_L 0.74
+#define MIN_BACK_R 0.69
+#define MIN_BACK_L 0.13
+#define MIN_PID_F 0.5
+#define DEBUG 1
+
+DigitalOut led1(LED1);
+DigitalOut mot_dir1(p30); //p30 is left DIR
+DigitalOut mot_dir2(p28); //p28 is right DIR
+
+AnalogIn pot2(p19); //right
+AnalogIn pot1(p20); //left
+Serial pc(USBTX, USBRX); // tx, rx
+//Serial pc(p9,p10); //bluetooth
+PwmOut pwmH2(p22); //p22 Right PWM
+PwmOut pwmH1(p21); //p21 Left PWM
+
+char readByte=0;
+
+void test_motor() {
+        float pwm_out = 0.0;
+        
+        mot_dir1=!mot_dir1;
+        pwm_out = 0.25;
+        pwmH1.write(pwm_out);
+        wait(0.25);
+        
+        pwm_out = 0.0;
+        pwmH1.write(pwm_out);
+        wait(1);
+        
+        mot_dir1=!mot_dir1;
+        pwm_out = 0.25;
+        pwmH1.write(pwm_out);
+        wait(0.25);
+        
+        pwm_out = 0.0;
+        pwmH1.write(pwm_out);
+        wait(1);
+}
+
+void test_pots() {
+        
+        pc.printf("%f %f\r\n",pot1.read(),pot2.read());  
+}
+
+void pc_rx_ISR() {
+    
+    readByte = pc.getc();            
+}
+
+int reset_controller() {
+    float pot1_ = pot1.read();
+    float pot2_ = pot2.read();
+    float error_R = 0.0;
+    float error_L = 0.0;
+    float Kp = 0.6;
+    float controller_R, controller_L = 0;
+    
+    
+    //pc.printf("%f %f %c\r\n",pot1_,pot2_,readByte);    
+    
+    error_R = ZERO_RIGHT - pot2;
+    error_L = ZERO_LEFT - pot1;
+    
+    //pc.printf("%f %f\r\n",error_L,error_R);    
+    
+    controller_R = Kp*error_R;
+    controller_L = Kp*error_L;
+    
+    if (controller_R > 1.0) { controller_R = 0.99;}
+    else if (controller_R < -1.0) { controller_R = -0.99;}
+    else if (controller_R < MIN_PID_F && controller_R > 0) {controller_R = MIN_PID_F;}
+    else if (controller_R > -MIN_PID_F && controller_R < 0) {controller_R = -MIN_PID_F;}
+    
+    if (controller_L > 1.0) { controller_L = 0.99;}
+    else if (controller_L < -1.0) { controller_L = -0.99;}
+    else if (controller_L < MIN_PID_F && controller_L > 0) {controller_L = MIN_PID_F;}
+    else if (controller_L > -MIN_PID_F && controller_L < 0) {controller_L = -MIN_PID_F;}
+        
+    if (controller_R <= 0.0) {
+        mot_dir2=0;
+        pwmH2.write(-controller_R);
+    }
+    else if (controller_R > 0.0) {
+        mot_dir2=1;
+        pwmH2.write(controller_R);
+    }
+    
+    if (controller_L <= 0.0) {
+        mot_dir1=1;
+        pwmH1.write(-controller_L);
+    }
+    else if (controller_L > 0.0) {
+        mot_dir1=0;
+        pwmH1.write(controller_L);
+    }
+    wait(WAIT_MOVEMENT_TIME);
+       
+    if ((error_R < ERROR_THRESHOLD && error_R > -ERROR_THRESHOLD) && (error_L < ERROR_THRESHOLD && error_L > -ERROR_THRESHOLD)) {
+        return 0; //all good
+    }
+    else {
+        return 1;
+    }
+}
+
+void center_manually() {
+    float sensitivity = 0.5;
+    float wait_time_s = WAIT_MOVEMENT_TIME;
+        
+    switch(readByte) {
+        case '8': //up
+                    if(pot1.read() > MAX_FORWARD_L || pot2.read() < MAX_FORWARD_R) {break;} //softstop
+                    mot_dir1=0;
+                    mot_dir2=0;
+                    pwmH1.write(sensitivity);
+                    pwmH2.write(sensitivity);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset
+                    break;
+
+        case '2': //down
+                    if(pot1.read() < MIN_BACK_L || pot2.read() > MIN_BACK_R) {break;} //softstop
+                    mot_dir1=1;
+                    mot_dir2=1;
+                    pwmH1.write(sensitivity);
+                    pwmH2.write(sensitivity);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset
+                    break;    
+     
+        case '4': //left
+                    if(pot1.read() < MIN_BACK_L || pot2.read() < MAX_FORWARD_R) {break;} //softstop
+                    mot_dir1=1;
+                    mot_dir2=0;
+                    pwmH1.write(sensitivity);
+                    pwmH2.write(sensitivity);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset
+                    break;
+                    
+        case '6': //right
+                    if(pot1.read() > MAX_FORWARD_L || pot2.read() > MIN_BACK_R) {break;}
+                    mot_dir1=0;
+                    mot_dir2=1;
+                    pwmH1.write(sensitivity);
+                    pwmH2.write(sensitivity);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset 
+                    break;
+    
+        case '0': //reset
+                //use potentiometer to reset.
+                pc.printf("Resetting ... \r\n");
+                while (reset_controller()) {wait_us(1);};
+                readByte = 0; //reset
+                break;
+                
+    
+        case '9':
+                    if(pot1.read() > MAX_FORWARD_L || pot2.read() < MAX_FORWARD_R) {break;}
+                    mot_dir1=0;
+                    mot_dir2=0;
+                    pwmH1.write(sensitivity);
+                    pwmH2.write(sensitivity/3);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset 
+                    break;   
+                    
+        case '7':
+                    if(pot1.read() > MAX_FORWARD_L || pot2.read() < MAX_FORWARD_R) {break;}
+                    mot_dir1=0;
+                    mot_dir2=0;
+                    pwmH1.write(sensitivity/3);
+                    pwmH2.write(sensitivity);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset 
+                    break;               
+                    
+        case '1':
+                    if(pot1.read() < MIN_BACK_L || pot2.read() > MIN_BACK_R) {break;} //softstop
+                    mot_dir1=1;
+                    mot_dir2=1;
+                    pwmH1.write(sensitivity);
+                    pwmH2.write(sensitivity/3);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset 
+                    break;        
+                    
+        case '3':
+                    if(pot1.read() < MIN_BACK_L || pot2.read() > MIN_BACK_R) {break;} //softstop
+                    mot_dir1=1;
+                    mot_dir2=1;
+                    pwmH1.write(sensitivity/2);
+                    pwmH2.write(sensitivity);
+                    wait(wait_time_s);
+                    pwmH1.write(0);   
+                    pwmH2.write(0);  
+                    if (DEBUG) pc.printf("%f %f %c\r\n",pot1.read(),pot2.read(),readByte);  
+                    readByte = 0; //reset 
+                    break;        
+                    
+        default:
+                    break;
+    }  
+    
+    pwmH1.write(0);
+    pwmH2.write(0);
+    
+}
+
+int main() {
+    
+    pwmH1.write(0);
+    pwmH2.write(0);
+    led1=0;
+    pc.baud(115200);
+    
+    for(int i=0; i<10; i++) {
+        led1=(!led1);
+        wait(0.25);
+    }
+    
+    pc.attach(&pc_rx_ISR);
+    
+    while (reset_controller()) {wait_us(1);};
+    
+    while(1) {
+        center_manually();
+        wait(0.001);
+    }
+}
